@@ -1,0 +1,112 @@
+name: payments-streaming
+
+# Kafka (KRaft, tek node) + Spark (local mode) + Flink (profil: flink) + producer (profil: tools)
+# Docker CLI yoksa Makefile OrbStack'in xbin klasorunu PATH'e ekler.
+
+services:
+  kafka:
+    image: apache/kafka:3.9.0
+    hostname: kafka
+    ports:
+      - "29092:29092" # host'tan erisim icin (localhost:29092)
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+  # Topic'leri olusturur ve cikar (make topics-init ile de calisir)
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        K=/opt/kafka/bin/kafka-topics.sh
+        B=kafka:9092
+        $$K --bootstrap-server $$B --create --if-not-exists --topic transactions      --partitions 3 --replication-factor 1
+        $$K --bootstrap-server $$B --create --if-not-exists --topic wallet_cdc        --partitions 1 --replication-factor 1
+        $$K --bootstrap-server $$B --create --if-not-exists --topic fraud-alerts      --partitions 1 --replication-factor 1
+        $$K --bootstrap-server $$B --create --if-not-exists --topic fraud-alerts-flink --partitions 1 --replication-factor 1
+        $$K --bootstrap-server $$B --list
+
+  # Spark tek konteynerde local mode; isler `make spark JOB=...` ile spark-submit edilir.
+  spark:
+    image: apache/spark:3.5.3-scala2.12-java17-python3-ubuntu
+    user: root
+    working_dir: /jobs
+    command: ["sleep", "infinity"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    ports:
+      - "4040:4040" # Spark UI (calisan job varken)
+    volumes:
+      - ./spark/jobs:/jobs:ro
+      - ./spark/data:/ref:ro
+      - ./data:/data
+      - spark-ivy:/ivy # --packages cache'i (her seferinde indirmeyelim)
+
+  jobmanager:
+    profiles: ["flink"]
+    build: ./flink
+    image: payments-flink:1.20
+    command: jobmanager
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081" # Flink UI
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        jobmanager.memory.process.size: 1024m
+    volumes:
+      - ./flink/sql:/sql:ro
+
+  taskmanager:
+    profiles: ["flink"]
+    image: payments-flink:1.20
+    command: taskmanager
+    depends_on:
+      - jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 2
+        taskmanager.memory.process.size: 1536m
+
+  producer:
+    profiles: ["tools"]
+    build: ./producer
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    volumes:
+      - ./data:/data
+
+volumes:
+  spark-ivy:
