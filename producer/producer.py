@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Sentetik odeme/cuzdan verisi ureticisi (fintech senaryosu).
+"""Synthetic payment/wallet data generator (fintech scenario).
 
-Alt komutlar:
-  txn          Kafka `transactions` topic'ine islem akisi uretir.
-  cdc          Kafka `wallet_cdc` topic'ine Debezium zarfi (before/after/op) bicimli bakiye degisiklikleri uretir.
-  gen-wallets  spark/data/wallets.csv dosyasini (statik boyut tablosu) uretir.
+Subcommands:
+  txn          Produces a transaction stream to the Kafka `transactions` topic.
+  cdc          Produces balance changes in Debezium envelope format (before/after/op) to the Kafka `wallet_cdc` topic.
+  gen-wallets  Generates spark/data/wallets.csv (the static dimension table).
 
-Veri bilerek "kirli": duplicate txn_id, gec gelen olaylar ve fraud burst'leri icerir.
-Her calismanin sonunda beklenen sonucu /data/ground_truth_*.json dosyasina yazar;
-`spark/jobs/verify.py` ciktilari bununla karsilastirir.
+The data is deliberately "dirty": it contains duplicate txn_ids, late events and fraud bursts.
+At the end of each run the expected result is written to /data/ground_truth_*.json;
+`spark/jobs/verify.py` compares the job outputs against it.
 """
 import argparse
 import json
@@ -37,7 +37,7 @@ def user_id(i):
 
 
 def iso(dt):
-    # Spark to_timestamp ve Flink JSON (ISO-8601) ikisinin de okudugu bicim
+    # Format readable by both Spark to_timestamp and Flink JSON (ISO-8601)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (dt.microsecond // 1000)
 
 
@@ -54,7 +54,7 @@ def write_json(name, obj):
 
 
 def make_producer():
-    from confluent_kafka import Producer  # tembel import: gen-wallets Kafka gerektirmez
+    from confluent_kafka import Producer  # lazy import: gen-wallets does not need Kafka
 
     return Producer({"bootstrap.servers": BOOT, "linger.ms": 20, "enable.idempotence": True})
 
@@ -75,7 +75,7 @@ def gen_wallets(args):
 
 # ------------------------------------------------------------------------ txn
 def new_event(rng, widx, event_time):
-    amount = round(min(rng.lognormvariate(4.5, 1.0), 15000), 2)  # medyan ~90 TRY, kuyruk uzun
+    amount = round(min(rng.lognormvariate(4.5, 1.0), 15000), 2)  # median ~90 TRY, long tail
     return {
         "txn_id": "T%016x" % rng.getrandbits(64),
         "wallet_id": wallet_id(widx),
@@ -107,7 +107,7 @@ def run_txn(a):
     last_log = start
     while time.time() < end:
         t0 = time.time()
-        # --- fraud burst: ayni cuzdanda kisa surede 8-10 islem
+        # --- fraud burst: 8-10 transactions on the same wallet in a short time
         if a.burst_interval > 0 and t0 >= next_burst and t0 < end - a.quiet_tail:
             widx = rng.randint(1, N_WALLETS)
             n = rng.randint(8, 10)
@@ -121,12 +121,12 @@ def run_txn(a):
             continue
 
         r = rng.random()
-        if r < 0.03 and recent:  # duplicate (at-least-once teslimat simulasyonu)
+        if r < 0.03 and recent:  # duplicate (simulates at-least-once delivery)
             send(rng.choice(recent))
             gt["duplicates_sent"] += 1
         else:
             et = utcnow()
-            if rng.random() < 0.04:  # gec gelen olay: 1-3 dk once olusmus
+            if rng.random() < 0.04:  # late event: occurred 1-3 min ago
                 et = et - timedelta(seconds=rng.uniform(60, 180))
                 gt["late_events"] += 1
             ev = new_event(rng, rng.randint(1, N_WALLETS), et)
@@ -175,11 +175,11 @@ def run_cdc(a):
         if a.delay:
             time.sleep(a.delay)
 
-    # 1) ilk kayitlar (insert)
+    # 1) initial records (insert)
     for i in range(1, N_WALLETS + 1):
-        state[i] = 100000  # 1000.00 TRY (kurus cinsinden, float hatasi olmasin)
+        state[i] = 100000  # 1000.00 TRY (in kurus, to avoid float errors)
         emit("c", None, row(i, state[i]))
-    # 2) guncellemeler; bazen ayni cuzdana art arda (ayni micro-batch'te cok guncelleme senaryosu)
+    # 2) updates; sometimes several in a row on the same wallet (the "many updates in one micro-batch" scenario)
     done = 0
     while done < a.events:
         i = rng.choice(list(state))
@@ -188,7 +188,7 @@ def run_cdc(a):
             state[i] = max(0, old + rng.randint(-20000, 50000))
             emit("u", row(i, old), row(i, state[i]))
             done += 1
-    # 3) silinen (kapatilan) cuzdanlar
+    # 3) deleted (closed) wallets
     deleted = rng.sample(list(state), a.deletes)
     for i in deleted:
         emit("d", row(i, state[i]), None)

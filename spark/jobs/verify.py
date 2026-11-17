@@ -1,10 +1,10 @@
-"""Uctan uca dogrulama: producer'in yazdigi ground truth ile Spark/Flink ciktilarini karsilastirir.
+"""End-to-end verification: compares Spark/Flink outputs with the ground truth written by the producer.
 
-Kontroller:
-  1. Silver Parquet: satir sayisi == tekil txn sayisi (duplicate kalmamis, kayip yok)
-  2. Delta wallets: nihai durum CDC ground truth ile ayni (guncellemeler uygulanmis, silinenler yok)
-  3. fraud-alerts (Spark) ve fraud-alerts-flink: enjekte edilen her burst cuzdani yakalanmis
-Cikis kodu: hepsi gecerse 0, aksi halde 1.
+Checks:
+  1. Silver Parquet: row count == unique txn count (no duplicates left, nothing lost)
+  2. Delta wallets: final state matches the CDC ground truth (updates applied, deleted wallets gone)
+  3. fraud-alerts (Spark) and fraud-alerts-flink: every injected burst wallet was caught
+Exit code: 0 if all pass, 1 otherwise.
 """
 import json
 import sys
@@ -66,7 +66,7 @@ if cdc_gt:
 else:
     print("SKIP - ground_truth_cdc.json yok")
 
-# 3) Alarmlar
+# 3) Alerts
 ALERT_SCHEMA = T.StructType([T.StructField("wallet_id", T.StringType()), T.StructField("txn_count", T.LongType())])
 
 

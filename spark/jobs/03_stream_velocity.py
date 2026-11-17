@@ -1,17 +1,17 @@
 """03 - Fraud velocity: event-time sliding window + watermark -> Kafka `fraud-alerts`.
 
-Kural: ayni cuzdanda 30 sn'lik pencerede (10 sn kayarak) >= esik kadar islem varsa alarm.
+Rule: alert if the same wallet has >= threshold transactions in a 30 s window (sliding every 10 s).
 
-Kavramlar: event time vs processing time, sliding window, watermark, geç veri,
+Concepts: event time vs processing time, sliding window, watermark, late data,
 output mode (update vs append), Kafka sink, checkpoint.
 
-Kullanim:
-  make spark JOB=03_stream_velocity                           # update mode, surekli
-  make spark JOB=03_stream_velocity ARGS="--mode append"      # pencere kapaninca (watermark gecince) tek sefer yazar
-  make spark JOB=03_stream_velocity ARGS=--available-now      # eldeki veriyi isle ve dur
+Usage:
+  make spark JOB=03_stream_velocity                           # update mode, continuous
+  make spark JOB=03_stream_velocity ARGS="--mode append"      # writes once when the window closes (watermark passes)
+  make spark JOB=03_stream_velocity ARGS=--available-now      # process what is available and stop
 
-NOT: Bu is bilerek dedup yapmiyor (Flink SQL surumuyle ayni kural). Duplicate sayim yapay olarak sisirebilir;
-uretimde dedup upstream (silver) yapilir ya da bu is silver topic'ten okur.
+NOTE: This job deliberately does not dedup (same rule as the Flink SQL version). Duplicates can inflate the counts;
+in production, dedup happens upstream (silver) or this job reads from the silver topic.
 """
 import argparse
 
@@ -33,7 +33,7 @@ spark.streams.addListener(listener)
 txns = read_transactions(spark)
 
 agg = (txns
-       .withWatermark("event_time", "2 minutes")  # 2 dk'dan daha gec gelen olaylar pencereye girmez (atilir)
+       .withWatermark("event_time", "2 minutes")  # events later than 2 min do not enter the window (dropped)
        .groupBy(F.window("event_time", "30 seconds", "10 seconds"), "wallet_id")
        .agg(F.count("*").alias("txn_count"), F.round(F.sum("amount"), 2).alias("total_amount")))
 
@@ -49,8 +49,8 @@ out = alerts.select(
         F.lit("spark").alias("engine"),
     )).alias("value"))
 
-# Update mode: pencere guncellenir guncellenmez alarm (dusuk gecikme) ama ayni pencere icin birden fazla alarm cikabilir.
-# Append mode: pencere watermark ile kapaninca TEK sonuc (en az 2 dk gecikme, tekrar yok).
+# Update mode: alert as soon as the window is updated (low latency), but the same window may emit multiple alerts.
+# Append mode: ONE result when the window closes via the watermark (at least 2 min delay, no repeats).
 if args.sink == "kafka":
     writer = (out.writeStream.format("kafka")
               .option("kafka.bootstrap.servers", KAFKA)
@@ -63,4 +63,4 @@ writer = writer.trigger(availableNow=True) if args.available_now else writer.tri
 
 q = writer.start()
 q.awaitTermination()
-finish(spark, listener)  # cikista py4j callback hatasi gormemek icin
+finish(spark, listener)  # avoids the py4j callback error on exit

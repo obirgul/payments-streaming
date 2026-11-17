@@ -1,14 +1,14 @@
 name: payments-streaming
 
-# Kafka (KRaft, tek node) + Spark (local mode) + Flink (profil: flink) + producer (profil: tools)
-# Docker CLI yoksa Makefile OrbStack'in xbin klasorunu PATH'e ekler.
+# Kafka (KRaft, single node) + Spark (local mode) + Flink (profile: flink) + producer (profile: tools)
+# If the Docker CLI is missing, the Makefile adds OrbStack's xbin folder to PATH.
 
 services:
   kafka:
     image: apache/kafka:3.9.0
     hostname: kafka
     ports:
-      - "29092:29092" # host'tan erisim icin (localhost:29092)
+      - "29092:29092" # access from the host (localhost:29092)
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
@@ -30,7 +30,7 @@ services:
       retries: 20
       start_period: 10s
 
-  # Topic'leri olusturur ve cikar (make topics-init ile de calisir)
+  # Creates the topics and exits (can also be run with make topics-init)
   kafka-init:
     image: apache/kafka:3.9.0
     depends_on:
@@ -49,7 +49,7 @@ services:
         $$K --bootstrap-server $$B --create --if-not-exists --topic fraud-alerts-flink --partitions 1 --replication-factor 1
         $$K --bootstrap-server $$B --list
 
-  # Spark tek konteynerde local mode; isler `make spark JOB=...` ile spark-submit edilir.
+  # Spark runs in local mode in a single container; jobs are spark-submitted with `make spark JOB=...`.
   spark:
     image: apache/spark:3.5.3-scala2.12-java17-python3-ubuntu
     user: root
@@ -61,12 +61,12 @@ services:
     environment:
       KAFKA_BOOTSTRAP: kafka:9092
     ports:
-      - "4040:4040" # Spark UI (calisan job varken)
+      - "4040:4040" # Spark UI (while a job is running)
     volumes:
       - ./spark/jobs:/jobs:ro
       - ./spark/data:/ref:ro
       - ./data:/data
-      - spark-ivy:/ivy # --packages cache'i (her seferinde indirmeyelim)
+      - spark-ivy:/ivy # --packages cache (avoid downloading every time)
 
   jobmanager:
     profiles: ["flink"]

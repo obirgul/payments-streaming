@@ -1,4 +1,4 @@
-"""Spark isleri icin ortak yardimcilar: SparkSession, Kafka kaynagi, sema, ilerleme dinleyicisi."""
+"""Shared helpers for Spark jobs: SparkSession, Kafka source, schema, progress listener."""
 import os
 import time
 
@@ -8,10 +8,10 @@ from pyspark.sql import types as T
 from pyspark.sql.streaming import StreamingQueryListener
 
 KAFKA = os.environ.get("KAFKA_BOOTSTRAP", "kafka:9092")
-DATA = "/data"  # cikti: silver parquet, delta, checkpoint'ler (host'ta ./data)
-REF = "/ref"    # statik referans veri (host'ta ./spark/data)
+DATA = "/data"  # output: silver parquet, delta, checkpoints (./data on the host)
+REF = "/ref"    # static reference data (./spark/data on the host)
 
-# event_time bilerek String: producer ISO-8601 yaziyor, burada timestamp'e ceviriyoruz
+# event_time is deliberately a String: the producer writes ISO-8601, here we convert it to a timestamp
 TXN_SCHEMA = T.StructType([
     T.StructField("txn_id", T.StringType()),
     T.StructField("wallet_id", T.StringType()),
@@ -27,7 +27,7 @@ TXN_SCHEMA = T.StructType([
 
 def get_spark(app_name, delta=False):
     b = (SparkSession.builder.appName(app_name)
-         .config("spark.sql.shuffle.partitions", "4")  # lokal makinede 200 partition anlamsiz
+         .config("spark.sql.shuffle.partitions", "4")  # 200 partitions make no sense on a local machine
          .config("spark.sql.session.timeZone", "UTC"))
     if delta:
         b = (b.config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
@@ -47,8 +47,8 @@ def kafka_stream(spark, topic, starting="earliest"):
 
 
 def read_transactions(spark):
-    """Kafka `transactions` -> typed DataFrame. Bozuk (parse edilemeyen) kayitlar atilir.
-    Gercek hayatta bunlar bir dead-letter topic'ine yazilir."""
+    """Kafka `transactions` -> typed DataFrame. Malformed (unparseable) records are dropped.
+    In real life these would be written to a dead-letter topic."""
     raw = kafka_stream(spark, "transactions")
     return (raw.select(F.from_json(F.col("value").cast("string"), TXN_SCHEMA).alias("t"))
             .select("t.*")
@@ -57,7 +57,7 @@ def read_transactions(spark):
 
 
 class ProgressPrinter(StreamingQueryListener):
-    """Her micro-batch icin ozet basar. numRowsDroppedByWatermark = watermark yuzunden atilan gec olaylar."""
+    """Prints a summary for each micro-batch. numRowsDroppedByWatermark = late events dropped because of the watermark."""
 
     def onQueryStarted(self, event):
         print("[query] basladi:", event.name or event.id)
@@ -79,7 +79,7 @@ class ProgressPrinter(StreamingQueryListener):
 
 
 def finish(spark, listener):
-    """Sorgu bitince listener'i temiz kapat. onQueryTerminated olayi JVM'de asenkron dagitildigi icin
-    Python callback sunucusu kapanmadan once kisa sure beklenir; yoksa py4j 'Received empty command' hatasi basar."""
+    """Remove the listener cleanly after the query ends. The onQueryTerminated event is dispatched asynchronously in the JVM,
+    so we wait briefly before the Python callback server shuts down; otherwise py4j prints a 'Received empty command' error."""
     time.sleep(3)
     spark.streams.removeListener(listener)

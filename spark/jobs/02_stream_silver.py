@@ -1,11 +1,11 @@
-"""02 - Streaming silver katmani: Kafka -> parse -> dedup (watermark) -> zenginlestir -> Parquet.
+"""02 - Streaming silver layer: Kafka -> parse -> dedup (watermark) -> enrich -> Parquet.
 
-Kavramlar: Structured Streaming, checkpoint, watermark, dropDuplicatesWithinWatermark,
+Concepts: Structured Streaming, checkpoint, watermark, dropDuplicatesWithinWatermark,
 stream-static join (broadcast), append mode, trigger.
 
-Kullanim:
-  make spark JOB=02_stream_silver                         # surekli (10 sn'lik micro-batch)
-  make spark JOB=02_stream_silver ARGS=--available-now    # eldeki veriyi isle ve dur (test/backfill)
+Usage:
+  make spark JOB=02_stream_silver                         # continuous (10 s micro-batches)
+  make spark JOB=02_stream_silver ARGS=--available-now    # process what is available and stop (test/backfill)
 """
 import argparse
 
@@ -21,19 +21,19 @@ spark = get_spark("02-stream-silver")
 listener = ProgressPrinter()
 spark.streams.addListener(listener)
 
-# Statik boyut tablosu (cuzdan segmenti, limit): batch okunur, her micro-batch'te broadcast join yapilir
+# Static dimension table (wallet segment, limit): read as batch, broadcast-joined in every micro-batch
 wallets = (spark.read.option("header", True).csv(f"{REF}/wallets.csv")
            .select("wallet_id", "segment", "city", F.col("daily_limit_try").cast("double")))
 
 txns = read_transactions(spark)
 
-# 1) Dedup: Kafka at-least-once teslimat ve uygulama retry'lari duplicate uretir.
-#    State sadece watermark kadar tutulur (5 dk) -> sinirsiz buyumez. 5 dk'dan eski duplicate yakalanmaz (trade-off).
+# 1) Dedup: Kafka at-least-once delivery and application retries produce duplicates.
+#    State is kept only for the watermark duration (5 min), so it does not grow unbounded. Duplicates older than 5 min are not caught (trade-off).
 deduped = (txns
            .withWatermark("event_time", "5 minutes")
            .dropDuplicatesWithinWatermark(["txn_id"]))
 
-# 2) Zenginlestirme
+# 2) Enrichment
 silver = (deduped
           .join(F.broadcast(wallets), "wallet_id", "left")
           .withColumn("txn_date", F.to_date("event_time"))
@@ -43,11 +43,11 @@ silver = (deduped
 writer = (silver.writeStream
           .format("parquet")
           .option("path", f"{DATA}/silver/transactions")
-          .option("checkpointLocation", f"{DATA}/checkpoints/silver")  # offset + state burada: yeniden baslayinca kaldigi yerden devam
+          .option("checkpointLocation", f"{DATA}/checkpoints/silver")  # offsets + state live here: on restart the job resumes where it left off
           .partitionBy("txn_date")
           .outputMode("append"))
 writer = writer.trigger(availableNow=True) if args.available_now else writer.trigger(processingTime="10 seconds")
 
 q = writer.start()
 q.awaitTermination()
-finish(spark, listener)  # cikista py4j callback hatasi gormemek icin
+finish(spark, listener)  # avoids the py4j callback error on exit

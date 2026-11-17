@@ -1,13 +1,13 @@
--- Flink SQL: Spark 03_stream_velocity.py ile AYNI kural (30 sn pencere, 10 sn kayma, >= 6 islem).
--- Calistirma: make flink-up && make flink-sql      (Flink UI: http://localhost:8081)
+-- Flink SQL: SAME rule as Spark 03_stream_velocity.py (30 s window, 10 s slide, >= 6 transactions).
+-- Run with: make flink-up && make flink-sql      (Flink UI: http://localhost:8081)
 
 SET 'pipeline.name' = 'fraud-velocity-flink';
--- Flinkte fault tolerance = periyodik checkpoint (state + kafka offset birlikte)
+-- In Flink, fault tolerance = periodic checkpoints (state + Kafka offsets together)
 SET 'execution.checkpointing.interval' = '10s';
--- bos kalan partition watermarki bloklamasin
+-- do not let an idle partition block the watermark
 SET 'table.exec.source.idle-timeout' = '10s';
 
--- Kaynak: Kafka `transactions`. WATERMARK = event time + 2 dk gec veri toleransi (Sparktaki withWatermark ile ayni).
+-- Source: Kafka topic transactions. WATERMARK = event time minus 2 min late-data tolerance (same as withWatermark in Spark).
 CREATE TABLE transactions (
   txn_id       STRING,
   wallet_id    STRING,
@@ -30,7 +30,7 @@ CREATE TABLE transactions (
   'json.ignore-parse-errors' = 'true'
 );
 
--- Hedef: Kafka `fraud-alerts-flink`
+-- Sink: Kafka topic fraud-alerts-flink
 CREATE TABLE fraud_alerts_flink (
   wallet_id     STRING,
   window_start  TIMESTAMP(3),
@@ -45,9 +45,9 @@ CREATE TABLE fraud_alerts_flink (
   'format' = 'json'
 );
 
--- HOP = sliding window (Sparkta window(col, "30 seconds", "10 seconds")).
--- Window TVF append-only sonuc uretir: pencere watermark ile KAPANINCA tek satir yazar
--- (Sparktaki "append" modu gibi; Spark update modunun erken/tekrarlayan alarmlari burada yok).
+-- HOP = sliding window (same as window(col, "30 seconds", "10 seconds") in Spark).
+-- The window TVF produces append-only results: one row is written when the window CLOSES via the watermark
+-- (like the append mode in Spark, the early or repeated alerts of Spark update mode do not occur here).
 INSERT INTO fraud_alerts_flink
 SELECT
   wallet_id,

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Uctan uca dogrulama: ortami sifirla -> veri uret -> Spark (+Flink) isleri -> ground truth ile karsilastir.
+# End-to-end verification: reset environment -> produce data -> Spark (+Flink) jobs -> compare with ground truth.
 #
-#   ./scripts/smoke_test.sh                  # ~8 dk (Spark + Flink)
-#   WITH_FLINK=0 DURATION=90 QUIET=40 ./scripts/smoke_test.sh   # hizli, sadece Spark
+#   ./scripts/smoke_test.sh                  # ~8 min (Spark + Flink)
+#   WITH_FLINK=0 DURATION=90 QUIET=40 ./scripts/smoke_test.sh   # fast, Spark only
 #
-# DURATION: islem uretim suresi (sn). QUIET: sondaki "burst uretilmeyen" sure (sn);
-# Flink penceresi watermark ile kapandigi icin QUIET >= 2 dk gec tolerans + 30 sn pencere olmali.
+# DURATION: transaction production time (s). QUIET: trailing "no bursts produced" time (s);
+# since the Flink window closes via the watermark, QUIET must be >= 2 min late tolerance + 30 s window.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

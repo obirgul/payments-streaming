@@ -1,11 +1,11 @@
-"""04 - CDC -> Delta Lake (lakehouse): Debezium bicimli olaylari foreachBatch + MERGE ile tabloya uygula.
+"""04 - CDC -> Delta Lake (lakehouse): apply Debezium-style events to a table with foreachBatch + MERGE.
 
-Kavramlar: CDC zarfi (before/after/op), micro-batch icinde "ayni anahtarin en son kaydi",
-idempotent MERGE (lsn karsilastirmasi), silme (delete), ACID tablo formati, foreachBatch.
+Concepts: CDC envelope (before/after/op), "latest record per key" within a micro-batch,
+idempotent MERGE (lsn comparison), deletes, ACID table format, foreachBatch.
 
-Kullanim:
-  make spark JOB=04_cdc_to_delta                         # surekli
-  make spark JOB=04_cdc_to_delta ARGS=--available-now    # eldeki veriyi isle ve dur
+Usage:
+  make spark JOB=04_cdc_to_delta                         # continuous
+  make spark JOB=04_cdc_to_delta ARGS=--available-now    # process what is available and stop
 """
 import argparse
 
@@ -47,7 +47,7 @@ cdc = (kafka_stream(spark, "wallet_cdc")
            "op",
            F.col("source.lsn").alias("lsn"),
            "ts_ms",
-           # delete'te `after` bos, anahtar `before` icinde
+           # on delete `after` is empty, the key is in `before`
            F.coalesce(F.col("after.wallet_id"), F.col("before.wallet_id")).alias("wallet_id"),
            F.col("after.user_id").alias("user_id"),
            F.col("after.balance_kurus").alias("balance_kurus"),
@@ -58,18 +58,18 @@ COLS = ["wallet_id", "user_id", "balance_kurus", "status", "lsn", "ts_ms"]
 
 
 def upsert(batch_df, batch_id):
-    # 1) Ayni micro-batch'te bir cuzdan icin birden cok olay olabilir -> sadece en sonuncusu (en buyuk lsn) uygulanir.
-    #    (MERGE, kaynakta ayni anahtardan birden fazla satir eslesirse hata verir.)
+    # 1) A micro-batch can hold several events for one wallet -> only the latest one (highest lsn) is applied.
+    #    (MERGE fails if more than one source row matches the same key.)
     w = Window.partitionBy("wallet_id").orderBy(F.col("lsn").desc())
     latest = batch_df.withColumn("rn", F.row_number().over(w)).where("rn = 1").drop("rn")
 
     if not DeltaTable.isDeltaTable(spark, TABLE_PATH):
-        (latest.where("1 = 0").select(*COLS).write.format("delta").save(TABLE_PATH))  # bos tablo + sema
+        (latest.where("1 = 0").select(*COLS).write.format("delta").save(TABLE_PATH))  # empty table + schema
 
     target = DeltaTable.forPath(spark, TABLE_PATH)
     (target.alias("t")
      .merge(latest.alias("s"), "t.wallet_id = s.wallet_id")
-     # `s.lsn > t.lsn`: eski/tekrar oynatilan olay yeni durumu ezmez -> MERGE idempotent
+     # `s.lsn > t.lsn`: an old/replayed event does not overwrite newer state -> MERGE is idempotent
      .whenMatchedDelete(condition="s.op = 'd' AND s.lsn > t.lsn")
      .whenMatchedUpdate(condition="s.op != 'd' AND s.lsn > t.lsn", set={c: f"s.{c}" for c in COLS})
      .whenNotMatchedInsert(condition="s.op != 'd'", values={c: f"s.{c}" for c in COLS})
@@ -82,4 +82,4 @@ writer = (cdc.writeStream
 writer = writer.trigger(availableNow=True) if args.available_now else writer.trigger(processingTime="10 seconds")
 q = writer.start()
 q.awaitTermination()
-finish(spark, listener)  # cikista py4j callback hatasi gormemek icin
+finish(spark, listener)  # avoids the py4j callback error on exit

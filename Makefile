@@ -1,5 +1,5 @@
-# Kullanim: `make help`
-# Docker CLI PATH'te degilse OrbStack'in bundle'indaki binary'ler kullanilir.
+# Usage: `make help`
+# If the Docker CLI is not on PATH, the binaries bundled with OrbStack are used.
 ORB_BIN := /Applications/OrbStack.app/Contents/MacOS/xbin
 export PATH := $(ORB_BIN):$(PATH)
 
