@@ -17,7 +17,7 @@ import argparse
 
 from pyspark.sql import functions as F
 
-from common import DATA, KAFKA, ProgressPrinter, get_spark, read_transactions
+from common import DATA, finish, get_spark, KAFKA, ProgressPrinter, read_transactions
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--threshold", type=int, default=6)
@@ -63,4 +63,4 @@ writer = writer.trigger(availableNow=True) if args.available_now else writer.tri
 
 q = writer.start()
 q.awaitTermination()
-spark.streams.removeListener(listener)  # cikista py4j callback hatasi gormemek icin
+finish(spark, listener)  # cikista py4j callback hatasi gormemek icin

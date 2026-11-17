@@ -14,7 +14,7 @@ from pyspark.sql import Window
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
-from common import DATA, ProgressPrinter, get_spark, kafka_stream
+from common import DATA, finish, get_spark, kafka_stream, ProgressPrinter
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--available-now", action="store_true")
@@ -82,4 +82,4 @@ writer = (cdc.writeStream
 writer = writer.trigger(availableNow=True) if args.available_now else writer.trigger(processingTime="10 seconds")
 q = writer.start()
 q.awaitTermination()
-spark.streams.removeListener(listener)  # cikista py4j callback hatasi gormemek icin
+finish(spark, listener)  # cikista py4j callback hatasi gormemek icin

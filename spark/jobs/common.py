@@ -1,5 +1,6 @@
 """Spark isleri icin ortak yardimcilar: SparkSession, Kafka kaynagi, sema, ilerleme dinleyicisi."""
 import os
+import time
 
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
@@ -75,3 +76,10 @@ class ProgressPrinter(StreamingQueryListener):
 
     def onQueryTerminated(self, event):
         print("[query] bitti", "(hata: %s)" % event.exception if event.exception else "")
+
+
+def finish(spark, listener):
+    """Sorgu bitince listener'i temiz kapat. onQueryTerminated olayi JVM'de asenkron dagitildigi icin
+    Python callback sunucusu kapanmadan once kisa sure beklenir; yoksa py4j 'Received empty command' hatasi basar."""
+    time.sleep(3)
+    spark.streams.removeListener(listener)

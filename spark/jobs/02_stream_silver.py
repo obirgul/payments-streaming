@@ -11,7 +11,7 @@ import argparse
 
 from pyspark.sql import functions as F
 
-from common import DATA, REF, ProgressPrinter, get_spark, read_transactions
+from common import DATA, finish, get_spark, ProgressPrinter, read_transactions, REF
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--available-now", action="store_true", help="mevcut veriyi isleyip bitir")
@@ -50,4 +50,4 @@ writer = writer.trigger(availableNow=True) if args.available_now else writer.tri
 
 q = writer.start()
 q.awaitTermination()
-spark.streams.removeListener(listener)  # cikista py4j callback hatasi gormemek icin
+finish(spark, listener)  # cikista py4j callback hatasi gormemek icin
