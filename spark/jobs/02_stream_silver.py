@@ -12,6 +12,7 @@ import argparse
 from pyspark.sql import functions as F
 
 from common import DATA, finish, get_spark, ProgressPrinter, read_transactions, REF
+from transforms import dedup, enrich
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--available-now", action="store_true", help="mevcut veriyi isleyip bitir")
@@ -27,18 +28,10 @@ wallets = (spark.read.option("header", True).csv(f"{REF}/wallets.csv")
 
 txns = read_transactions(spark)
 
-# 1) Dedup: Kafka at-least-once delivery and application retries produce duplicates.
-#    State is kept only for the watermark duration (5 min), so it does not grow unbounded. Duplicates older than 5 min are not caught (trade-off).
-deduped = (txns
-           .withWatermark("event_time", "5 minutes")
-           .dropDuplicatesWithinWatermark(["txn_id"]))
-
-# 2) Enrichment
-silver = (deduped
-          .join(F.broadcast(wallets), "wallet_id", "left")
-          .withColumn("txn_date", F.to_date("event_time"))
-          .withColumn("is_high_value", F.col("amount") >= 2000)
-          .withColumn("amount_to_limit", F.round(F.col("amount") / F.col("daily_limit_try"), 4)))
+# Dedup (Kafka at-least-once delivery and application retries produce duplicates) + enrichment: see transforms.py.
+# Dedup state is kept only for the watermark duration (5 min), so it does not grow unbounded.
+# Duplicates older than 5 min are not caught (trade-off).
+silver = enrich(dedup(txns), wallets)
 
 writer = (silver.writeStream
           .format("parquet")

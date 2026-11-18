@@ -16,7 +16,7 @@ RATE     ?= 5
 DURATION ?= 240
 TOPIC    ?= fraud-alerts
 
-.PHONY: help up down topics-init topics produce produce-cdc spark consume flink-up flink-sql flink-down reset verify smoke
+.PHONY: help up down topics-init topics produce produce-cdc spark consume flink-up flink-sql flink-down reset verify smoke test
 
 help:
 	@echo "make up                      Kafka + Spark konteynerlerini baslat, topic'leri olustur"
@@ -27,6 +27,7 @@ help:
 	@echo "make flink-up / flink-sql / flink-down   Flink cluster + SQL isi"
 	@echo "make consume TOPIC=fraud-alerts          topic'i oku"
 	@echo "make reset                   topic, checkpoint ve cikti verisini sifirla"
+	@echo "make test [TEST=test_cdc]   birim testleri (Kafka gerekmez, ~1-2 dk)"
 	@echo "make smoke                   uctan uca dogrulama (scripts/smoke_test.sh)"
 	@echo "make down                    her seyi durdur"
 
@@ -72,6 +73,11 @@ reset:
 
 verify:
 	$(DC) exec -T spark $(SPARK_SUBMIT) /jobs/verify.py
+
+# Unit tests: a fresh spark container (no Kafka needed); `--no-deps` skips the Kafka dependency.
+test:
+	@mkdir -p data
+	$(DC) run --rm --no-deps -T spark $(SPARK_SUBMIT) /tests/run_tests.py $(TEST)
 
 smoke:
 	./scripts/smoke_test.sh

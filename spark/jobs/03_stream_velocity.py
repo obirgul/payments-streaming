@@ -15,9 +15,8 @@ in production, dedup happens upstream (silver) or this job reads from the silver
 """
 import argparse
 
-from pyspark.sql import functions as F
-
 from common import DATA, finish, get_spark, KAFKA, ProgressPrinter, read_transactions
+from transforms import alerts_to_kafka, velocity_alerts
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--threshold", type=int, default=6)
@@ -32,22 +31,9 @@ spark.streams.addListener(listener)
 
 txns = read_transactions(spark)
 
-agg = (txns
-       .withWatermark("event_time", "2 minutes")  # events later than 2 min do not enter the window (dropped)
-       .groupBy(F.window("event_time", "30 seconds", "10 seconds"), "wallet_id")
-       .agg(F.count("*").alias("txn_count"), F.round(F.sum("amount"), 2).alias("total_amount")))
-
-alerts = agg.where(F.col("txn_count") >= args.threshold)
-
-out = alerts.select(
-    F.col("wallet_id").alias("key"),
-    F.to_json(F.struct(
-        "wallet_id",
-        F.col("window.start").alias("window_start"),
-        F.col("window.end").alias("window_end"),
-        "txn_count", "total_amount",
-        F.lit("spark").alias("engine"),
-    )).alias("value"))
+# Window/watermark/threshold logic lives in transforms.py (unit tested).
+# Events later than 2 min do not enter the window (dropped).
+out = alerts_to_kafka(velocity_alerts(txns, args.threshold))
 
 # Update mode: alert as soon as the window is updated (low latency), but the same window may emit multiple alerts.
 # Append mode: ONE result when the window closes via the watermark (at least 2 min delay, no repeats).

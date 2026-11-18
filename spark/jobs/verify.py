@@ -4,6 +4,7 @@ Checks:
   1. Silver Parquet: row count == unique txn count (no duplicates left, nothing lost)
   2. Delta wallets: final state matches the CDC ground truth (updates applied, deleted wallets gone)
   3. fraud-alerts (Spark) and fraud-alerts-flink: every injected burst wallet was caught
+  4. Spark and Flink alerts agree window by window (same rule -> same windows and counts)
 Exit code: 0 if all pass, 1 otherwise.
 """
 import json
@@ -12,6 +13,7 @@ import sys
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
+from alert_compare import compare_alerts
 from common import DATA, KAFKA, get_spark
 
 spark = get_spark("verify", delta=True)
@@ -67,14 +69,22 @@ else:
     print("SKIP - ground_truth_cdc.json yok")
 
 # 3) Alerts
-ALERT_SCHEMA = T.StructType([T.StructField("wallet_id", T.StringType()), T.StructField("txn_count", T.LongType())])
+ALERT_SCHEMA = T.StructType([
+    T.StructField("wallet_id", T.StringType()),
+    T.StructField("window_start", T.StringType()),  # Spark: 2024-01-01T10:00:00.000Z, Flink: 2024-01-01T10:00:00
+    T.StructField("txn_count", T.LongType()),
+])
+alert_rows = {}  # topic -> [(wallet_id, window_start, txn_count)]
 
 
 def alert_wallets(topic):
     df = (spark.read.format("kafka").option("kafka.bootstrap.servers", KAFKA)
           .option("subscribe", topic).option("startingOffsets", "earliest").load())
-    parsed = df.select(F.from_json(F.col("value").cast("string"), ALERT_SCHEMA).alias("a")).select("a.*")
-    return {r["wallet_id"] for r in parsed.select("wallet_id").distinct().collect()}, df.count()
+    parsed = (df.select(F.from_json(F.col("value").cast("string"), ALERT_SCHEMA).alias("a")).select("a.*")
+              .withColumn("window_start", F.col("window_start").cast("timestamp")))
+    rows = [(r["wallet_id"], r["window_start"], r["txn_count"]) for r in parsed.collect()]
+    alert_rows[topic] = rows
+    return {r[0] for r in rows}, df.count()
 
 
 if txn_gt:
@@ -92,6 +102,19 @@ if txn_gt:
         fp = wallets - bursts
         check("%s: burst cuzdanlarinin hepsi yakalandi" % topic, caught == bursts,
               "(yakalanan=%d/%d, alarm mesaji=%d, yanlis pozitif cuzdan=%d)" % (len(caught), len(bursts), n, len(fp)))
+
+# 4) Spark vs Flink: same rule, so the same windows with the same counts
+if len(alert_rows) == 2:
+    diff = compare_alerts(alert_rows["fraud-alerts"], alert_rows["fraud-alerts-flink"])
+    check("spark/flink: ayni pencereler", not diff["only_spark"] and not diff["only_flink"],
+          "(ortak=%d, sadece spark=%d, sadece flink=%d)" % (diff["common"], len(diff["only_spark"]), len(diff["only_flink"])))
+    # Flink drops late events (> 2 min behind the watermark); Spark with --available-now (one batch) still counts them.
+    # So Spark >= Flink is expected; Flink > Spark never is.
+    check("spark/flink: flink hicbir pencerede spark'tan fazla saymiyor", not diff["flink_higher"],
+          "" if not diff["flink_higher"] else "(ornek: %s)" % diff["flink_higher"][:3])
+    if diff["spark_higher"]:
+        print("INFO - %d pencerede spark flink'ten fazla say(d)i (gec olay farki, beklenen): %s" % (
+            len(diff["spark_higher"]), [(k[0], c_s, c_f) for k, c_s, c_f in diff["spark_higher"][:3]]))
 
 print("\nSONUC:", "HEPSI GECTI" if not failures else "BASARISIZ -> " + ", ".join(failures))
 spark.stop()

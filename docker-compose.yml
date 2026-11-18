@@ -65,6 +65,8 @@ services:
     volumes:
       - ./spark/jobs:/jobs:ro
       - ./spark/data:/ref:ro
+      - ./tests:/tests:ro # unit tests (make test)
+      - ./producer:/producer:ro # tests import producer.py
       - ./data:/data
       - spark-ivy:/ivy # --packages cache (avoid downloading every time)
 

@@ -46,14 +46,18 @@ def kafka_stream(spark, topic, starting="earliest"):
             .load())
 
 
-def read_transactions(spark):
-    """Kafka `transactions` -> typed DataFrame. Malformed (unparseable) records are dropped.
+def parse_transactions(raw):
+    """Frame with a Kafka-style `value` column -> typed transactions. Malformed (unparseable) records are dropped.
     In real life these would be written to a dead-letter topic."""
-    raw = kafka_stream(spark, "transactions")
     return (raw.select(F.from_json(F.col("value").cast("string"), TXN_SCHEMA).alias("t"))
             .select("t.*")
             .where(F.col("txn_id").isNotNull() & F.col("wallet_id").isNotNull())
             .withColumn("event_time", F.to_timestamp("event_time")))
+
+
+def read_transactions(spark):
+    """Kafka `transactions` -> typed DataFrame (see parse_transactions)."""
+    return parse_transactions(kafka_stream(spark, "transactions"))
 
 
 class ProgressPrinter(StreamingQueryListener):

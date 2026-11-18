@@ -58,6 +58,9 @@ make verify
 
 # Hepsini otomatik: sıfırla -> üret -> işle -> doğrula
 make smoke
+
+# Birim testleri (Kafka gerekmez, ~30 sn): dedup, fraud penceresi, CDC MERGE, producer tutarlılığı
+make test                  # tek modül: make test TEST=test_cdc
 ```
 
 ## Ne var?
