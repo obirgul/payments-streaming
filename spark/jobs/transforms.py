@@ -115,3 +115,79 @@ def apply_cdc_batch(spark, batch_df, table_path):
      .whenMatchedUpdate(condition="s.op != 'd' AND s.lsn > t.lsn", set={c: f"s.{c}" for c in CDC_COLS})
      .whenNotMatchedInsert(condition="s.op != 'd'", values={c: f"s.{c}" for c in CDC_COLS})
      .execute())
+
+
+# ---------------------------------------------------------------- 05 ledger
+LEDGER_ROW = T.StructType([
+    T.StructField("entry_id", T.LongType()),
+    T.StructField("wallet_id", T.StringType()),
+    T.StructField("delta_kurus", T.LongType()),
+    T.StructField("reason", T.StringType()),
+])
+LEDGER_CDC_SCHEMA = T.StructType([
+    T.StructField("op", T.StringType()),
+    T.StructField("ts_ms", T.LongType()),
+    T.StructField("source", T.StructType([T.StructField("lsn", T.LongType())])),
+    T.StructField("before", LEDGER_ROW),
+    T.StructField("after", LEDGER_ROW),
+])
+LEDGER_COLS = ["entry_id", "wallet_id", "delta_kurus", "reason", "lsn", "ts_ms"]
+
+
+def parse_ledger(raw):
+    """Debezium envelope of ledger_entries -> flat columns. Entries without a key (tombstones, garbage) are dropped."""
+    return (raw
+            .select(F.from_json(F.col("value").cast("string"), LEDGER_CDC_SCHEMA).alias("c"))
+            .select("c.*")
+            .select(
+                "op",
+                F.col("source.lsn").alias("lsn"),
+                "ts_ms",
+                F.coalesce(F.col("after.entry_id"), F.col("before.entry_id")).alias("entry_id"),
+                F.coalesce(F.col("after.wallet_id"), F.col("before.wallet_id")).alias("wallet_id"),
+                F.col("after.delta_kurus").alias("delta_kurus"),
+                F.col("after.reason").alias("reason"),
+            )
+            .where(F.col("entry_id").isNotNull()))
+
+
+def apply_ledger_batch(spark, batch_df, table_path):
+    """Idempotent MERGE of ledger events keyed by entry_id. The ledger is append-only in normal operation;
+    deletes only happen when a test run wipes the table, and are applied so stale entries do not cause false mismatches."""
+    w = Window.partitionBy("entry_id").orderBy(F.col("lsn").desc())
+    latest = batch_df.withColumn("rn", F.row_number().over(w)).where("rn = 1").drop("rn")
+
+    if not DeltaTable.isDeltaTable(spark, table_path):
+        latest.where("1 = 0").select(*LEDGER_COLS).write.format("delta").save(table_path)
+
+    (DeltaTable.forPath(spark, table_path).alias("t")
+     .merge(latest.alias("s"), "t.entry_id = s.entry_id")
+     .whenMatchedDelete(condition="s.op = 'd' AND s.lsn > t.lsn")
+     .whenMatchedUpdate(condition="s.op != 'd' AND s.lsn > t.lsn", set={c: f"s.{c}" for c in LEDGER_COLS})
+     .whenNotMatchedInsert(condition="s.op != 'd'", values={c: f"s.{c}" for c in LEDGER_COLS})
+     .execute())
+
+
+# ---------------------------------------------------------------- 06 reconciliation
+def reconcile(wallets, ledger):
+    """Compares each wallet balance with the sum of its ledger entries. Returns ONLY the discrepancies:
+
+      balance_mismatch  wallet exists, ledger exists, balance != ledger sum
+      missing_ledger    wallet has a non-zero balance but no ledger entries at all
+      orphan_ledger     ledger entries remain for a wallet that no longer exists and they do not net to zero
+                        (a closed wallet must have been paid out to exactly zero)
+
+    `diff_kurus` = balance - ledger_sum (positive: money in the balance the ledger cannot explain)."""
+    sums = ledger.groupBy("wallet_id").agg(F.sum("delta_kurus").alias("ledger_sum"), F.count("*").alias("entries"))
+    joined = (wallets.select("wallet_id", F.col("balance_kurus").alias("balance"))
+              .join(sums, "wallet_id", "full_outer"))
+    balance = F.coalesce(F.col("balance"), F.lit(0))
+    ledger_sum = F.coalesce(F.col("ledger_sum"), F.lit(0))
+    status = (F.when(F.col("balance").isNull(), F.lit("orphan_ledger"))
+              .when(F.col("entries").isNull(), F.lit("missing_ledger"))
+              .otherwise(F.lit("balance_mismatch")))
+    return (joined
+            .withColumn("diff_kurus", balance - ledger_sum)
+            .where(F.col("diff_kurus") != 0)
+            .withColumn("status", status)
+            .select("wallet_id", "status", "balance", "ledger_sum", "entries", "diff_kurus"))

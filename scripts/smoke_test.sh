@@ -37,7 +37,7 @@ fi
 step "4/5 Veri uretimi: ${DURATION}s islem akisi + CDC"
 make produce DURATION="$DURATION" PRODUCER_ARGS="--burst-interval 15 --quiet-tail $QUIET"
 if [ "$WITH_PG" = "1" ]; then
-  make produce-wallets
+  make produce-wallets PRODUCER_ARGS="--drift 3"  # 3 wallets get a balance change WITHOUT a ledger entry
   echo "Debezium'un son degisiklikleri Kafka'ya yazmasi icin 15 sn bekleniyor..."
   sleep 15
 else
@@ -49,6 +49,12 @@ for job in 02_stream_silver 03_stream_velocity 04_cdc_to_delta; do
   echo "--- $job"
   make spark JOB="$job" ARGS=--available-now 2>&1 | grep -E '^\[batch|ERROR|Exception' || true
 done
+if [ "$WITH_PG" = "1" ]; then
+  echo "--- 05_ledger_to_delta"
+  make spark JOB=05_ledger_to_delta ARGS=--available-now 2>&1 | grep -E '^\[batch|ERROR|Exception' || true
+  echo "--- 06_reconcile (3 enjekte sapma bulmali; cikis kodu 1 beklenir)"
+  make spark JOB=06_reconcile 2>&1 | grep -E '^\[reconcile\]|Exception' || true
+fi
 if [ "$WITH_FLINK" = "1" ]; then
   echo "Flink'in son pencereleri yazmasi icin 20 sn bekleniyor..."
   sleep 20

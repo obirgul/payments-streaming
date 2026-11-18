@@ -6,7 +6,7 @@
   "database.password": "payments",
   "database.dbname": "payments",
   "topic.prefix": "payments",
-  "table.include.list": "public.wallets",
+  "table.include.list": "public.wallets,public.ledger_entries",
   "plugin.name": "pgoutput",
   "slot.name": "wallets_slot",
   "publication.name": "wallets_pub",
@@ -17,8 +17,11 @@
   "key.converter.schemas.enable": "false",
   "value.converter": "org.apache.kafka.connect.json.JsonConverter",
   "value.converter.schemas.enable": "false",
-  "transforms": "route",
-  "transforms.route.type": "org.apache.kafka.connect.transforms.RegexRouter",
-  "transforms.route.regex": "payments\\.public\\.wallets",
-  "transforms.route.replacement": "wallet_cdc"
+  "transforms": "routeWallets,routeLedger",
+  "transforms.routeWallets.type": "org.apache.kafka.connect.transforms.RegexRouter",
+  "transforms.routeWallets.regex": "payments\\.public\\.wallets",
+  "transforms.routeWallets.replacement": "wallet_cdc",
+  "transforms.routeLedger.type": "org.apache.kafka.connect.transforms.RegexRouter",
+  "transforms.routeLedger.regex": "payments\\.public\\.ledger_entries",
+  "transforms.routeLedger.replacement": "ledger_cdc"
 }

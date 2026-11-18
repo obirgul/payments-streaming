@@ -25,7 +25,7 @@ help:
 	@echo "make produce [RATE=5 DURATION=240]  islem akisi uret (transactions)"
 	@echo "make produce-cdc             Debezium bicimli bakiye degisiklikleri uret (wallet_cdc)"
 	@echo "make spark JOB=02_stream_silver [ARGS=--available-now]   Spark isi calistir"
-	@echo "      JOB: 01_batch_basics | 02_stream_silver | 03_stream_velocity | 04_cdc_to_delta | verify"
+	@echo "      JOB: 01_batch_basics | 02_stream_silver | 03_stream_velocity | 04_cdc_to_delta | 05_ledger_to_delta | 06_reconcile | verify"
 	@echo "make cdc-up                   Postgres + Kafka Connect/Debezium baslat, connector'u kaydet"
 	@echo "make produce-wallets         cuzdan degisikliklerini Postgres'e yaz (Debezium wallet_cdc'ye akitir)"
 	@echo "make cdc-status / psql / cdc-down   connector durumu / SQL kabugu / durdur"
@@ -90,9 +90,9 @@ flink-down:
 reset:
 	-$(DCF) stop jobmanager taskmanager
 	-$(DCC) stop connect
-	-$(DCC) exec -T postgres psql -U payments -d payments -c "TRUNCATE wallets" -c "SELECT pg_drop_replication_slot('wallets_slot')"
+	-$(DCC) exec -T postgres psql -U payments -d payments -c "TRUNCATE wallets, ledger_entries" -c "SELECT pg_drop_replication_slot('wallets_slot')"
 	rm -rf data/checkpoints data/silver data/delta data/ground_truth_*.json
-	-$(DC) exec -T kafka bash -c 'for t in transactions wallet_cdc fraud-alerts fraud-alerts-flink connect_configs connect_offsets connect_statuses; do /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic $$t; done'
+	-$(DC) exec -T kafka bash -c 'for t in transactions wallet_cdc ledger_cdc fraud-alerts fraud-alerts-flink connect_configs connect_offsets connect_statuses; do /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic $$t; done'
 	sleep 5
 	$(DC) run --rm kafka-init
 

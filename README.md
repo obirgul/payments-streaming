@@ -75,9 +75,23 @@ make cdc-up                  # Postgres + Kafka Connect baslar, connector kayded
 make produce-wallets         # 200 cuzdan insert, ~600 bakiye degisikligi (tek satir + transfer), 5 kapatma
 make spark JOB=04_cdc_to_delta ARGS=--available-now
 make verify                  # Delta == Postgres'teki son durum (ground truth, tablodan okunur)
+
+# Bakiye mutabakati: cuzdan bakiyesi == ledger toplami mi?
+make produce-wallets PRODUCER_ARGS="--drift 3"   # 3 cuzdanda ledger'siz bakiye degisikligi enjekte et
+make spark JOB=05_ledger_to_delta ARGS=--available-now
+make spark JOB=06_reconcile                      # uyusmayanlari yazdirir, varsa exit 1
 make cdc-status              # connector durumu;  make psql  -> SELECT * FROM wallets;
 WITH_PG=1 ./scripts/smoke_test.sh   # hepsini otomatik (sentetik CDC yerine Postgres)
 ```
+
+**Mutabakat:** `ledger_entries` tablosuna her bakiye değişikliği, cüzdan güncellemesiyle AYNI transaction'da bir satır
+olarak yazılır (açılış, düzeltme, transfer çıkış/giriş, kapatma). Değişmez kural: `balance_kurus == SUM(delta_kurus)`.
+`05` ledger'ı Delta'ya aktarır, `06` cüzdan Delta'sı ile ledger toplamını karşılaştırıp yalnızca uyuşmazlıkları
+(`balance_mismatch`, `missing_ledger`, `orphan_ledger`) `data/delta/reconciliation`'a yazar. Bu kontrol hem uygulama
+hatalarını (ledger'ı atlayan yol, elle düzeltme) hem de CDC hattında kayıp/uygulanmamış olayları yakalar.
+`--drift N` ile bilerek ledger'sız değişiklik yapılır; `verify` tam olarak bu cüzdanların ve tutarların bulunduğunu,
+yanlış pozitif olmadığını doğrular. İki Delta tablosu bağımsız akışlarla beslenir: ikisi de yetişmeden çalıştırırsan
+uçuştaki olaylar geçici uyuşmazlık gibi görünür.
 
 Bilinenler: connector ayari `debezium/wallets-connector.json`, tablo `postgres/init.sql` (`REPLICA IDENTITY FULL`:
 güncelleme/silmede tam eski satır `before`'da gelir). `make reset` slot'u, connect topic'lerini ve tabloyu da sıfırlar;
@@ -88,7 +102,8 @@ sonra `make cdc-up` ile yeniden başlat. Connect REST API: `localhost:8083`, Pos
 | Dosya | Konu |
 |---|---|
 | `producer/producer.py` | Sentetik işlem akışı, Debezium biçimli sentetik CDC (`cdc`) ve Postgres'e yazan cüzdan servisi (`wallet-db`); ground truth üretir |
-| `postgres/init.sql`, `debezium/wallets-connector.json` | Cüzdan tablosu ve Debezium Postgres connector ayarı |
+| `postgres/init.sql`, `debezium/wallets-connector.json` | Cüzdan + ledger tabloları ve Debezium Postgres connector ayarı (`wallet_cdc`, `ledger_cdc`) |
+| `spark/jobs/05_ledger_to_delta.py`, `06_reconcile.py` | Ledger CDC → Delta; bakiye == ledger toplamı mutabakatı |
 | `spark/jobs/01_batch_basics.py` | Lazy evaluation, `explain()`, broadcast vs sort-merge join, window function, skew + salting, repartition/coalesce, partition pruning |
 | `spark/jobs/02_stream_silver.py` | Kafka → parse → watermark + `dropDuplicatesWithinWatermark` → stream-static join → Parquet, checkpoint |
 | `spark/jobs/03_stream_velocity.py` | Event-time sliding window, watermark, update vs append mode, Kafka sink |

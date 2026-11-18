@@ -5,6 +5,8 @@ Checks:
   2. Delta wallets: final state matches the CDC ground truth (updates applied, deleted wallets gone)
   3. fraud-alerts (Spark) and fraud-alerts-flink: every injected burst wallet was caught
   4. Spark and Flink alerts agree window by window (same rule -> same windows and counts)
+  5. Reconciliation (Postgres source only): found exactly the wallets whose balance was changed without a ledger
+     entry, with the exact amounts, and nothing else
 Exit code: 0 if all pass, 1 otherwise.
 """
 import json
@@ -116,6 +118,24 @@ if len(alert_rows) == 2:
     if diff["spark_higher"]:
         print("INFO - %d pencerede spark flink'ten fazla say(d)i (gec olay farki, beklenen): %s" % (
             len(diff["spark_higher"]), [(k[0], c_s, c_f) for k, c_s, c_f in diff["spark_higher"][:3]]))
+
+# 5) Reconciliation: only with the Postgres source (ground truth has a `drifted` section)
+if cdc_gt and "drifted" in cdc_gt:
+    try:
+        rec = {r["wallet_id"]: r["diff_kurus"] for r in spark.read.format("delta").load(f"{DATA}/delta/reconciliation").collect()}
+        exp = cdc_gt["drifted"]
+        check("mutabakat: enjekte edilen sapmalar bulundu", set(exp) <= set(rec),
+              "(bulunan=%d/%d)" % (len(set(exp) & set(rec)), len(exp)))
+        check("mutabakat: sapma tutarlari dogru", all(rec.get(w) == d for w, d in exp.items()),
+              "" if all(rec.get(w) == d for w, d in exp.items()) else "(beklenen=%s, bulunan=%s)" % (
+                  dict(list(exp.items())[:3]), {w: rec.get(w) for w in list(exp)[:3]}))
+        check("mutabakat: baska uyusmazlik yok (yanlis pozitif)", set(rec) <= set(exp),
+              "" if set(rec) <= set(exp) else "(fazladan: %s)" % sorted(set(rec) - set(exp))[:5])
+        n_led = spark.read.format("delta").load(f"{DATA}/delta/ledger").count()
+        check("ledger: kayit sayisi Postgres ile ayni", n_led == cdc_gt["ledger_entries"],
+              "(delta=%d, postgres=%d)" % (n_led, cdc_gt["ledger_entries"]))
+    except Exception as e:  # noqa: BLE001
+        check("mutabakat sonucu okunabildi", False, str(e).splitlines()[0])
 
 print("\nSONUC:", "HEPSI GECTI" if not failures else "BASARISIZ -> " + ", ".join(failures))
 spark.stop()

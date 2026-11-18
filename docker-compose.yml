@@ -46,6 +46,7 @@ services:
         B=kafka:9092
         $$K --bootstrap-server $$B --create --if-not-exists --topic transactions      --partitions 3 --replication-factor 1
         $$K --bootstrap-server $$B --create --if-not-exists --topic wallet_cdc        --partitions 1 --replication-factor 1
+        $$K --bootstrap-server $$B --create --if-not-exists --topic ledger_cdc        --partitions 1 --replication-factor 1
         $$K --bootstrap-server $$B --create --if-not-exists --topic fraud-alerts      --partitions 1 --replication-factor 1
         $$K --bootstrap-server $$B --create --if-not-exists --topic fraud-alerts-flink --partitions 1 --replication-factor 1
         $$K --bootstrap-server $$B --list

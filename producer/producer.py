@@ -209,41 +209,58 @@ def run_cdc(a):
 # -------------------------------------------------------------------- wallet-db
 def run_wallet_db(a):
     """Wallet service stand-in: the application writes to Postgres, Debezium captures the changes.
-    Ground truth = the table content after all changes (Postgres is the source of truth)."""
+
+    Every balance change also inserts a ledger entry in the SAME transaction, so
+    wallets.balance_kurus == SUM(ledger_entries.delta_kurus) holds by construction.
+    --drift N then breaks the invariant on N wallets (balance changed WITHOUT a ledger entry, like a buggy
+    code path or a manual fix) so that reconciliation has something to find.
+    Ground truth = the wallets table after all changes (Postgres is the source of truth)."""
     import psycopg2  # lazy import: only this subcommand needs it
 
     rng = random.Random(a.seed + 1)
     conn = psycopg2.connect(PG_DSN)
     conn.autocommit = False
     cur = conn.cursor()
-    ops = {"insert": 0, "update": 0, "transfer": 0, "delete": 0}
+    ops = {"insert": 0, "update": 0, "transfer": 0, "delete": 0, "drift": 0}
 
     def pause():
         if a.delay:
             time.sleep(a.delay)
 
-    # 1) fresh start + initial wallets (1000.00 TRY each, in kurus)
+    def entry(w, delta, reason):
+        cur.execute("INSERT INTO ledger_entries (wallet_id, delta_kurus, reason) VALUES (%s, %s, %s)", (w, delta, reason))
+
+    def balance(w):
+        cur.execute("SELECT balance_kurus FROM wallets WHERE wallet_id = %s FOR UPDATE", (w,))
+        r = cur.fetchone()
+        return r[0] if r else None
+
+    def move(w, delta, reason):
+        cur.execute("UPDATE wallets SET balance_kurus = balance_kurus + %s, updated_at = now() WHERE wallet_id = %s",
+                    (delta, w))
+        entry(w, delta, reason)
+
+    # 1) fresh start + initial wallets (opening deposit of 1000.00 TRY, in kurus, is a ledger entry too)
+    cur.execute("DELETE FROM ledger_entries")
     cur.execute("DELETE FROM wallets")
     for i in range(1, N_WALLETS + 1):
         cur.execute("INSERT INTO wallets (wallet_id, user_id, balance_kurus) VALUES (%s, %s, %s)",
                     (wallet_id(i), user_id(i), 100000))
+        entry(wallet_id(i), 100000, "opening")
         ops["insert"] += 1
     conn.commit()
 
-    # 2) balance changes; each one is its own transaction. Some are transfers (two rows in ONE transaction),
-    #    some wallets get several quick updates in a row (many events for one key in one micro-batch)
+    # 2) balance changes; each one is its own transaction. Some are transfers (two rows + two ledger entries in
+    #    ONE transaction), some wallets get several quick updates in a row (many events for one key in one micro-batch)
     done = 0
     while done < a.events:
         if rng.random() < 0.2:
             src, dst = rng.sample(range(1, N_WALLETS + 1), 2)
             amount = rng.randint(1, 20000)
-            cur.execute("SELECT balance_kurus FROM wallets WHERE wallet_id = %s", (wallet_id(src),))
-            row = cur.fetchone()
-            if row and row[0] >= amount:  # skip silently if the source wallet is closed or too poor
-                cur.execute("UPDATE wallets SET balance_kurus = balance_kurus - %s, updated_at = now() WHERE wallet_id = %s",
-                            (amount, wallet_id(src)))
-                cur.execute("UPDATE wallets SET balance_kurus = balance_kurus + %s, updated_at = now() WHERE wallet_id = %s",
-                            (amount, wallet_id(dst)))
+            bal = balance(wallet_id(src))
+            if bal is not None and bal >= amount and balance(wallet_id(dst)) is not None:  # skip closed/too poor
+                move(wallet_id(src), -amount, "transfer_out")
+                move(wallet_id(dst), amount, "transfer_in")
                 ops["transfer"] += 1
                 done += 2
             conn.commit()
@@ -251,26 +268,56 @@ def run_wallet_db(a):
             continue
         i = rng.randint(1, N_WALLETS)
         for _ in range(rng.choice([1, 1, 1, 3])):
-            cur.execute("UPDATE wallets SET balance_kurus = GREATEST(0, balance_kurus + %s), updated_at = now() "
-                        "WHERE wallet_id = %s", (rng.randint(-20000, 50000), wallet_id(i)))
+            bal = balance(wallet_id(i))
+            if bal is None:
+                conn.rollback()
+                break
+            delta = max(-bal, rng.randint(-20000, 50000))  # never below zero; the ledger gets the REAL change
+            if delta:
+                move(wallet_id(i), delta, "adjustment")
             conn.commit()
             ops["update"] += 1
             done += 1
             pause()
 
-    # 3) closed wallets
+    # 3) closed wallets: pay out the remaining balance (ledger entry), then delete the row
     deleted = [wallet_id(i) for i in rng.sample(range(1, N_WALLETS + 1), a.deletes)]
     for w in deleted:
+        bal = balance(w)
+        if bal:
+            move(w, -bal, "close")
         cur.execute("DELETE FROM wallets WHERE wallet_id = %s", (w,))
         ops["delete"] += 1
         conn.commit()
         pause()
 
+    # 4) injected drift: balance changed without a ledger entry
+    drifted = {}
+    if a.drift:
+        cur.execute("SELECT wallet_id FROM wallets ORDER BY wallet_id")
+        for w in rng.sample([r[0] for r in cur.fetchall()], a.drift):
+            amount = rng.choice([-1, 1]) * rng.randint(100, 5000)
+            cur.execute("UPDATE wallets SET balance_kurus = GREATEST(0, balance_kurus + %s) WHERE wallet_id = %s "
+                        "RETURNING balance_kurus", (amount, w))
+            conn.commit()
+            drifted[w] = amount
+            ops["drift"] += 1
+            pause()
+    # exact drift = balance - ledger sum, read back from the DB (GREATEST above can clamp)
+    cur.execute("SELECT w.wallet_id, w.balance_kurus - COALESCE(SUM(l.delta_kurus), 0) FROM wallets w "
+                "LEFT JOIN ledger_entries l USING (wallet_id) GROUP BY w.wallet_id, w.balance_kurus "
+                "HAVING w.balance_kurus <> COALESCE(SUM(l.delta_kurus), 0)")
+    drifted = {w: int(d) for w, d in cur.fetchall()}
+
     cur.execute("SELECT wallet_id, balance_kurus FROM wallets ORDER BY wallet_id")
     final_state = {w: b for w, b in cur.fetchall()}
+    cur.execute("SELECT COUNT(*) FROM ledger_entries")
+    ledger_entries = cur.fetchone()[0]
     conn.close()
-    write_json("ground_truth_cdc.json", {"final_state": final_state, "deleted": deleted, "operations": ops})
-    print("wallet-db bitti:", ops, "| aktif cuzdan=%d, silinen=%d" % (len(final_state), len(deleted)))
+    write_json("ground_truth_cdc.json", {"final_state": final_state, "deleted": deleted, "operations": ops,
+                                         "ledger_entries": ledger_entries, "drifted": drifted})
+    print("wallet-db bitti:", ops, "| aktif cuzdan=%d, silinen=%d, ledger=%d, drift=%d" % (
+        len(final_state), len(deleted), ledger_entries, len(drifted)))
 
 
 def main():
@@ -293,6 +340,7 @@ def main():
     w.add_argument("--events", type=int, default=600, help="bakiye degisikligi sayisi (transfer 2 sayilir)")
     w.add_argument("--deletes", type=int, default=5)
     w.add_argument("--delay", type=float, default=0.0, help="islemler arasi bekleme (sn)")
+    w.add_argument("--drift", type=int, default=0, help="ledger'siz bakiye degisikligi yapilacak cuzdan sayisi (mutabakat testi)")
     w.add_argument("--seed", type=int, default=7)
     w.set_defaults(fn=run_wallet_db)
     g = sub.add_parser("gen-wallets")
