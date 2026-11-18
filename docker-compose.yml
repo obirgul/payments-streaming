@@ -1,7 +1,7 @@
 name: payments-streaming
 
 # Kafka (KRaft, single node) + Spark (local mode) + Flink (profile: flink) + producer (profile: tools)
-# + Postgres and Kafka Connect/Debezium (profile: cdc)
+# + Postgres and Kafka Connect/Debezium (profile: cdc) + Prometheus/Grafana (profile: obs)
 # If the Docker CLI is missing, the Makefile adds OrbStack's xbin folder to PATH.
 
 services:
@@ -86,6 +86,9 @@ services:
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: jobmanager
         jobmanager.memory.process.size: 1024m
+        metrics.reporters: prom
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
     volumes:
       - ./flink/sql:/sql:ro
 
@@ -100,6 +103,9 @@ services:
         jobmanager.rpc.address: jobmanager
         taskmanager.numberOfTaskSlots: 2
         taskmanager.memory.process.size: 1536m
+        metrics.reporters: prom
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
 
   producer:
     profiles: ["tools"]
@@ -160,6 +166,40 @@ services:
       timeout: 5s
       retries: 30
       start_period: 15s
+
+  # --- Observability (profile obs): Prometheus scrapes Kafka (kafka-exporter), Spark drivers and Flink
+  kafka-exporter:
+    profiles: ["obs"]
+    image: danielqsj/kafka-exporter:v1.8.0
+    command: ["--kafka.server=kafka:9092"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  prometheus:
+    profiles: ["obs"]
+    image: prom/prometheus:v2.55.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+
+  grafana:
+    profiles: ["obs"]
+    image: grafana/grafana:11.3.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
 
 volumes:
   spark-ivy:

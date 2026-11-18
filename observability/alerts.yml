@@ -1,0 +1,6 @@
+groups:
+  - name: pipeline
+    rules:
+      - alert: FlinkDown
+        expr: up{job="flink"} == 0
+        for: 1m

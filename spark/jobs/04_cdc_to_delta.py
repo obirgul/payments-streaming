@@ -32,6 +32,7 @@ def upsert(batch_df, batch_id):
 writer = (cdc.writeStream
           .foreachBatch(upsert)
           .option("checkpointLocation", f"{DATA}/checkpoints/cdc"))
+writer = writer.queryName("cdc_wallets")  # Prometheus metric name
 writer = writer.trigger(availableNow=True) if args.available_now else writer.trigger(processingTime="10 seconds")
 q = writer.start()
 q.awaitTermination()

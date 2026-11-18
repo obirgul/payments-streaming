@@ -97,6 +97,28 @@ Bilinenler: connector ayari `debezium/wallets-connector.json`, tablo `postgres/i
 güncelleme/silmede tam eski satır `before`'da gelir). `make reset` slot'u, connect topic'lerini ve tabloyu da sıfırlar;
 sonra `make cdc-up` ile yeniden başlat. Connect REST API: `localhost:8083`, Postgres: `localhost:5432` (payments/payments, sadece yerel demo).
 
+## Gözlemlenebilirlik (Prometheus + Grafana)
+
+```bash
+make obs-up      # Prometheus :9090, Grafana :3000 (admin/admin, anonim okuma açık), kafka-exporter
+make obs-down
+```
+
+Grafana'da hazır **Payments Pipeline** panosu gelir (5 sn yenilenir):
+
+| Bölüm | Kaynak | Ne gösterir |
+|---|---|---|
+| Kafka | `kafka-exporter` | topic başına mesaj/sn ve toplam offset (alarm topic'leri dahil) |
+| Spark | driver `/metrics/prometheus` | sorgu başına giriş/işleme hızı, batch gecikmesi, watermark gerisi, state satırı |
+| Flink | Prometheus reporter (`:9249`) | kaynak hızı, görev meşguliyeti, checkpoint süresi/hataları |
+| Alarmlar | Kafka offset'leri | Spark ve Flink'in ürettiği alarm hızı yan yana |
+
+Spark metrikleri sadece iş çalışırken vardır (her iş UI portu `4040`, `4041`, ... alır; Prometheus ilk dördünü tarar).
+Sorgular `queryName` ile adlandırıldı (`silver`, `velocity`, `cdc_wallets`, `cdc_ledger`); Spark metrik adlarına uygulama
+kimliğini koyar, `observability/prometheus.yml` bunu `spark_streaming_<metrik>{query="..."}` biçimine çevirir.
+Flink için `make flink-up && make flink-sql` gerekir (imaj Prometheus reporter jar'ını `plugins/` altına alır).
+Alarm kuralları `observability/alerts.yml` içinde; Alertmanager yok, durum Prometheus arayüzünde görünür.
+
 ## Ne var?
 
 | Dosya | Konu |
@@ -122,7 +144,7 @@ sonra `make cdc-up` ile yeniden başlat. Connect REST API: `localhost:8083`, Pos
 
 ## Notlar
 
-- **Portlar:** Kafka host'tan `localhost:29092`, Spark UI `4040` (iş çalışırken), Flink UI `8081`, Postgres `5432` ve Connect `8083` (`cdc` profili).
+- **Portlar:** Kafka host'tan `localhost:29092`, Spark UI `4040` (iş çalışırken), Flink UI `8081`, Prometheus `9090` ve Grafana `3000` (`obs` profili), Postgres `5432` ve Connect `8083` (`cdc` profili).
 - **Veri:** `./data` (silver, delta, checkpoint, ground truth). `make reset` hepsini ve topic'leri sıfırlar.
 - **Flink SQL notu:** `sql-client.sh -f` dosyasında yorumlarda tek tırnak (`'`) ve `;` sonrası aynı satırda yorum kullanma; ifadeler birleşip `only single statement supported` hatası verir.
 - **Kapsam dışı:** Spark cluster modu, schema registry (Debezium burada şemasız JSON yazar).

@@ -1,0 +1,415 @@
+{
+ "title": "Payments Pipeline",
+ "uid": "payments-pipeline",
+ "schemaVersion": 39,
+ "version": 1,
+ "refresh": "5s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "type": "row",
+   "title": "Kafka",
+   "gridPos": {
+    "x": 0,
+    "y": 1,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "Mesaj/sn (topic bazinda)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 2,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (topic) (rate(kafka_topic_partition_current_offset{topic!~\"__.*|connect_.*\"}[30s]))",
+     "legendFormat": "{{topic}}"
+    }
+   ],
+   "id": 2
+  },
+  {
+   "type": "timeseries",
+   "title": "Toplam mesaj (end offset)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 2,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (topic) (kafka_topic_partition_current_offset{topic!~\"__.*|connect_.*\"})",
+     "legendFormat": "{{topic}}"
+    }
+   ],
+   "id": 3
+  },
+  {
+   "type": "row",
+   "title": "Spark Structured Streaming (isler calisirken)",
+   "gridPos": {
+    "x": 0,
+    "y": 11,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "id": 4
+  },
+  {
+   "type": "timeseries",
+   "title": "Giris hizi (satir/sn)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 12,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "spark_streaming_inputRate_total",
+     "legendFormat": "{{query}}"
+    }
+   ],
+   "id": 5
+  },
+  {
+   "type": "timeseries",
+   "title": "Isleme hizi (satir/sn)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 12,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "spark_streaming_processingRate_total",
+     "legendFormat": "{{query}}"
+    }
+   ],
+   "id": 6
+  },
+  {
+   "type": "timeseries",
+   "title": "Batch gecikmesi",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 12,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "spark_streaming_latency",
+     "legendFormat": "{{query}}"
+    }
+   ],
+   "id": 7
+  },
+  {
+   "type": "timeseries",
+   "title": "Watermark gerisi (simdi - watermark)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "time() - spark_streaming_eventTime_watermark / 1000",
+     "legendFormat": "{{query}}"
+    }
+   ],
+   "id": 8
+  },
+  {
+   "type": "timeseries",
+   "title": "State satirlari",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 20,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "spark_streaming_states_rowsTotal",
+     "legendFormat": "{{query}}"
+    }
+   ],
+   "id": 9
+  },
+  {
+   "type": "row",
+   "title": "Flink (flink-up + flink-sql sonrasi)",
+   "gridPos": {
+    "x": 0,
+    "y": 29,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "id": 10
+  },
+  {
+   "type": "timeseries",
+   "title": "Kaynak giris hizi (kayit/sn)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 30,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(flink_taskmanager_job_task_numRecordsInPerSecond{task_name=~\"Source.*\"})",
+     "legendFormat": "kaynak"
+    }
+   ],
+   "id": 11
+  },
+  {
+   "type": "timeseries",
+   "title": "Gorev mesgulluk orani (ms/sn)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 30,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max by (task_name) (flink_taskmanager_job_task_busyTimeMsPerSecond)",
+     "legendFormat": "{{task_name}}"
+    }
+   ],
+   "id": 12
+  },
+  {
+   "type": "timeseries",
+   "title": "Checkpoint",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 30,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "flink_jobmanager_job_lastCheckpointDuration",
+     "legendFormat": "sure ms"
+    },
+    {
+     "refId": "B",
+     "expr": "flink_jobmanager_job_numberOfFailedCheckpoints",
+     "legendFormat": "basarisiz"
+    }
+   ],
+   "id": 13
+  },
+  {
+   "type": "row",
+   "title": "Fraud alarmlari: Spark ve Flink",
+   "gridPos": {
+    "x": 0,
+    "y": 39,
+    "w": 24,
+    "h": 1
+   },
+   "collapsed": false,
+   "id": 14
+  },
+  {
+   "type": "timeseries",
+   "title": "Alarm/sn",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ops"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "rate(kafka_topic_partition_current_offset{topic=\"fraud-alerts\"}[1m])",
+     "legendFormat": "spark"
+    },
+    {
+     "refId": "B",
+     "expr": "rate(kafka_topic_partition_current_offset{topic=\"fraud-alerts-flink\"}[1m])",
+     "legendFormat": "flink"
+    }
+   ],
+   "id": 15
+  },
+  {
+   "type": "timeseries",
+   "title": "Toplam alarm",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 40,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(kafka_topic_partition_current_offset{topic=\"fraud-alerts\"})",
+     "legendFormat": "spark"
+    },
+    {
+     "refId": "B",
+     "expr": "sum(kafka_topic_partition_current_offset{topic=\"fraud-alerts-flink\"})",
+     "legendFormat": "flink"
+    }
+   ],
+   "id": 16
+  }
+ ],
+ "tags": [
+  "payments"
+ ]
+}

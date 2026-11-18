@@ -39,6 +39,7 @@ writer = (silver.writeStream
           .option("checkpointLocation", f"{DATA}/checkpoints/silver")  # offsets + state live here: on restart the job resumes where it left off
           .partitionBy("txn_date")
           .outputMode("append"))
+writer = writer.queryName("silver")  # Prometheus metric name
 writer = writer.trigger(availableNow=True) if args.available_now else writer.trigger(processingTime="10 seconds")
 
 q = writer.start()

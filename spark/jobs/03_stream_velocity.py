@@ -45,6 +45,7 @@ else:
     writer = out.writeStream.format("console").option("truncate", "false")
 writer = (writer.outputMode(args.mode)
           .option("checkpointLocation", f"{DATA}/checkpoints/velocity-{args.sink}-{args.mode}"))
+writer = writer.queryName("velocity")  # Prometheus metric name
 writer = writer.trigger(availableNow=True) if args.available_now else writer.trigger(processingTime="5 seconds")
 
 q = writer.start()
