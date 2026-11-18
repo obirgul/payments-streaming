@@ -96,6 +96,7 @@ if txn_gt:
             print("SKIP -", topic, "okunamadi:", str(e).splitlines()[0])
             continue
         if n == 0:
+            alert_rows.pop(topic, None)  # an empty topic must not take part in the Spark/Flink comparison
             print("SKIP -", topic, "bos (ilgili is calistirilmadi mi?)")
             continue
         caught = bursts & wallets

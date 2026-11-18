@@ -1,6 +1,7 @@
 name: payments-streaming
 
 # Kafka (KRaft, single node) + Spark (local mode) + Flink (profile: flink) + producer (profile: tools)
+# + Postgres and Kafka Connect/Debezium (profile: cdc)
 # If the Docker CLI is missing, the Makefile adds OrbStack's xbin folder to PATH.
 
 services:
@@ -109,6 +110,55 @@ services:
       KAFKA_BOOTSTRAP: kafka:9092
     volumes:
       - ./data:/data
+
+  # --- CDC source (profile cdc): Postgres (logical WAL) -> Debezium -> Kafka topic wallet_cdc
+  postgres:
+    profiles: ["cdc"]
+    image: postgres:16
+    hostname: postgres
+    command: ["postgres", "-c", "wal_level=logical"]
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+      POSTGRES_DB: payments
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments -d payments"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Kafka Connect with the Debezium Postgres connector; register it with `make cdc-up`
+  connect:
+    profiles: ["cdc"]
+    image: quay.io/debezium/connect:2.7.3.Final
+    hostname: connect
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083" # Connect REST API
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx768m"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
 volumes:
   spark-ivy:

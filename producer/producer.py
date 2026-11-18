@@ -3,7 +3,10 @@
 
 Subcommands:
   txn          Produces a transaction stream to the Kafka `transactions` topic.
-  cdc          Produces balance changes in Debezium envelope format (before/after/op) to the Kafka `wallet_cdc` topic.
+  cdc          Produces balance changes in Debezium envelope format (before/after/op) to the Kafka `wallet_cdc` topic
+               directly (synthetic, no Postgres needed).
+  wallet-db    Applies wallet changes (inserts, updates, transfers, closures) to Postgres; Debezium turns them into
+               the same `wallet_cdc` events (needs `make cdc-up`).
   gen-wallets  Generates spark/data/wallets.csv (the static dimension table).
 
 The data is deliberately "dirty": it contains duplicate txn_ids, late events and fraud bursts.
@@ -21,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 
 BOOT = os.environ.get("KAFKA_BOOTSTRAP", "kafka:9092")
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
+PG_DSN = os.environ.get("PG_DSN", "postgresql://payments:payments@postgres:5432/payments")
 N_WALLETS = 200
 MERCHANTS = ["M%03d" % i for i in range(1, 41)]
 COUNTRIES = ["TR"] * 18 + ["DE", "NL", "AE"]
@@ -202,6 +206,73 @@ def run_cdc(a):
     print("cdc bitti: %d olay, %d aktif cuzdan, %d silinen" % (lsn[0], len(state), len(deleted)))
 
 
+# -------------------------------------------------------------------- wallet-db
+def run_wallet_db(a):
+    """Wallet service stand-in: the application writes to Postgres, Debezium captures the changes.
+    Ground truth = the table content after all changes (Postgres is the source of truth)."""
+    import psycopg2  # lazy import: only this subcommand needs it
+
+    rng = random.Random(a.seed + 1)
+    conn = psycopg2.connect(PG_DSN)
+    conn.autocommit = False
+    cur = conn.cursor()
+    ops = {"insert": 0, "update": 0, "transfer": 0, "delete": 0}
+
+    def pause():
+        if a.delay:
+            time.sleep(a.delay)
+
+    # 1) fresh start + initial wallets (1000.00 TRY each, in kurus)
+    cur.execute("DELETE FROM wallets")
+    for i in range(1, N_WALLETS + 1):
+        cur.execute("INSERT INTO wallets (wallet_id, user_id, balance_kurus) VALUES (%s, %s, %s)",
+                    (wallet_id(i), user_id(i), 100000))
+        ops["insert"] += 1
+    conn.commit()
+
+    # 2) balance changes; each one is its own transaction. Some are transfers (two rows in ONE transaction),
+    #    some wallets get several quick updates in a row (many events for one key in one micro-batch)
+    done = 0
+    while done < a.events:
+        if rng.random() < 0.2:
+            src, dst = rng.sample(range(1, N_WALLETS + 1), 2)
+            amount = rng.randint(1, 20000)
+            cur.execute("SELECT balance_kurus FROM wallets WHERE wallet_id = %s", (wallet_id(src),))
+            row = cur.fetchone()
+            if row and row[0] >= amount:  # skip silently if the source wallet is closed or too poor
+                cur.execute("UPDATE wallets SET balance_kurus = balance_kurus - %s, updated_at = now() WHERE wallet_id = %s",
+                            (amount, wallet_id(src)))
+                cur.execute("UPDATE wallets SET balance_kurus = balance_kurus + %s, updated_at = now() WHERE wallet_id = %s",
+                            (amount, wallet_id(dst)))
+                ops["transfer"] += 1
+                done += 2
+            conn.commit()
+            pause()
+            continue
+        i = rng.randint(1, N_WALLETS)
+        for _ in range(rng.choice([1, 1, 1, 3])):
+            cur.execute("UPDATE wallets SET balance_kurus = GREATEST(0, balance_kurus + %s), updated_at = now() "
+                        "WHERE wallet_id = %s", (rng.randint(-20000, 50000), wallet_id(i)))
+            conn.commit()
+            ops["update"] += 1
+            done += 1
+            pause()
+
+    # 3) closed wallets
+    deleted = [wallet_id(i) for i in rng.sample(range(1, N_WALLETS + 1), a.deletes)]
+    for w in deleted:
+        cur.execute("DELETE FROM wallets WHERE wallet_id = %s", (w,))
+        ops["delete"] += 1
+        conn.commit()
+        pause()
+
+    cur.execute("SELECT wallet_id, balance_kurus FROM wallets ORDER BY wallet_id")
+    final_state = {w: b for w, b in cur.fetchall()}
+    conn.close()
+    write_json("ground_truth_cdc.json", {"final_state": final_state, "deleted": deleted, "operations": ops})
+    print("wallet-db bitti:", ops, "| aktif cuzdan=%d, silinen=%d" % (len(final_state), len(deleted)))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -218,6 +289,12 @@ def main():
     c.add_argument("--delay", type=float, default=0.0)
     c.add_argument("--seed", type=int, default=7)
     c.set_defaults(fn=run_cdc)
+    w = sub.add_parser("wallet-db")
+    w.add_argument("--events", type=int, default=600, help="bakiye degisikligi sayisi (transfer 2 sayilir)")
+    w.add_argument("--deletes", type=int, default=5)
+    w.add_argument("--delay", type=float, default=0.0, help="islemler arasi bekleme (sn)")
+    w.add_argument("--seed", type=int, default=7)
+    w.set_defaults(fn=run_wallet_db)
     g = sub.add_parser("gen-wallets")
     g.add_argument("--out", default="wallets.csv")
     g.set_defaults(fn=gen_wallets)

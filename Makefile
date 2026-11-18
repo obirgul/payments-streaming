@@ -5,6 +5,8 @@ export PATH := $(ORB_BIN):$(PATH)
 
 DC      := $(ORB_BIN)/docker-compose
 DCF     := $(DC) --profile flink
+DCC     := $(DC) --profile cdc
+CONNECT := http://localhost:8083
 PKGS    := org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.3,io.delta:delta-spark_2.12:3.2.1
 SPARK_SUBMIT := /opt/spark/bin/spark-submit --master local[2] --driver-memory 1g \
                 --packages $(PKGS) --conf spark.jars.ivy=/ivy \
@@ -16,7 +18,7 @@ RATE     ?= 5
 DURATION ?= 240
 TOPIC    ?= fraud-alerts
 
-.PHONY: help up down topics-init topics produce produce-cdc spark consume flink-up flink-sql flink-down reset verify smoke test
+.PHONY: help up down topics-init topics produce produce-cdc spark consume flink-up flink-sql flink-down cdc-up cdc-status cdc-down produce-wallets psql reset verify smoke test
 
 help:
 	@echo "make up                      Kafka + Spark konteynerlerini baslat, topic'leri olustur"
@@ -24,6 +26,9 @@ help:
 	@echo "make produce-cdc             Debezium bicimli bakiye degisiklikleri uret (wallet_cdc)"
 	@echo "make spark JOB=02_stream_silver [ARGS=--available-now]   Spark isi calistir"
 	@echo "      JOB: 01_batch_basics | 02_stream_silver | 03_stream_velocity | 04_cdc_to_delta | verify"
+	@echo "make cdc-up                   Postgres + Kafka Connect/Debezium baslat, connector'u kaydet"
+	@echo "make produce-wallets         cuzdan degisikliklerini Postgres'e yaz (Debezium wallet_cdc'ye akitir)"
+	@echo "make cdc-status / psql / cdc-down   connector durumu / SQL kabugu / durdur"
 	@echo "make flink-up / flink-sql / flink-down   Flink cluster + SQL isi"
 	@echo "make consume TOPIC=fraud-alerts          topic'i oku"
 	@echo "make reset                   topic, checkpoint ve cikti verisini sifirla"
@@ -51,6 +56,24 @@ produce-cdc:
 spark:
 	$(DC) exec $(shell [ -t 0 ] || echo -T) spark $(SPARK_SUBMIT) /jobs/$(JOB).py $(ARGS)
 
+produce-wallets:
+	$(DC) --profile tools --profile cdc run --rm --build producer wallet-db $(PRODUCER_ARGS)
+
+# Starts Postgres + Connect and (re)registers the Debezium connector. PUT on /config is idempotent.
+cdc-up:
+	$(DCC) up -d --wait postgres connect
+	curl -sf -X PUT -H 'Content-Type: application/json' --data @debezium/wallets-connector.json \
+		$(CONNECT)/connectors/wallets-cdc/config >/dev/null && echo "connector kaydedildi: wallets-cdc"
+
+cdc-status:
+	@curl -s $(CONNECT)/connectors/wallets-cdc/status | python3 -m json.tool
+
+psql:
+	$(DCC) exec postgres psql -U payments -d payments
+
+cdc-down:
+	$(DCC) stop connect postgres
+
 consume:
 	$(DC) exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
 		--topic $(TOPIC) --from-beginning --timeout-ms 8000
@@ -66,8 +89,10 @@ flink-down:
 
 reset:
 	-$(DCF) stop jobmanager taskmanager
+	-$(DCC) stop connect
+	-$(DCC) exec -T postgres psql -U payments -d payments -c "TRUNCATE wallets" -c "SELECT pg_drop_replication_slot('wallets_slot')"
 	rm -rf data/checkpoints data/silver data/delta data/ground_truth_*.json
-	-$(DC) exec -T kafka bash -c 'for t in transactions wallet_cdc fraud-alerts fraud-alerts-flink; do /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic $$t; done'
+	-$(DC) exec -T kafka bash -c 'for t in transactions wallet_cdc fraud-alerts fraud-alerts-flink connect_configs connect_offsets connect_statuses; do /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic $$t; done'
 	sleep 5
 	$(DC) run --rm kafka-init
 
@@ -83,4 +108,4 @@ smoke:
 	./scripts/smoke_test.sh
 
 down:
-	$(DCF) --profile tools down
+	$(DCF) --profile tools --profile cdc down

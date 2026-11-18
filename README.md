@@ -41,7 +41,7 @@ make spark JOB=01_batch_basics
 
 # 1) Veri üret (240 sn, ~5 olay/sn) -- ayrı terminalde çalışırken Spark işlerini canlı izleyebilirsin
 make produce
-make produce-cdc
+make produce-cdc                             # sentetik CDC (Postgres'siz); gercek CDC icin asagidaki "Postgres + Debezium"
 
 # 2) Streaming işleri (sürekli çalışır, Ctrl-C ile durdur) -- ya da ARGS=--available-now ile eldekini işle ve bitir
 make spark JOB=02_stream_silver
@@ -63,11 +63,32 @@ make smoke
 make test                  # tek modül: make test TEST=test_cdc
 ```
 
+## Postgres + Debezium (gerçek CDC)
+
+`wallet_cdc` olaylarını sentetik üretmek yerine uygulama Postgres'e yazar, Debezium WAL'dan okuyup Kafka'ya akıtır:
+`wallet-db (producer) → Postgres → Debezium (Kafka Connect) → wallet_cdc → Spark 04 → Delta`. Spark tarafı değişmez,
+çünkü gerçek Debezium zarfı (`before`/`after`/`op`/`source.lsn`) sentetik olanla aynı biçimdedir.
+
+```bash
+make up
+make cdc-up                  # Postgres + Kafka Connect baslar, connector kaydedilir, ilk snapshot (op=r) akar
+make produce-wallets         # 200 cuzdan insert, ~600 bakiye degisikligi (tek satir + transfer), 5 kapatma
+make spark JOB=04_cdc_to_delta ARGS=--available-now
+make verify                  # Delta == Postgres'teki son durum (ground truth, tablodan okunur)
+make cdc-status              # connector durumu;  make psql  -> SELECT * FROM wallets;
+WITH_PG=1 ./scripts/smoke_test.sh   # hepsini otomatik (sentetik CDC yerine Postgres)
+```
+
+Bilinenler: connector ayari `debezium/wallets-connector.json`, tablo `postgres/init.sql` (`REPLICA IDENTITY FULL`:
+güncelleme/silmede tam eski satır `before`'da gelir). `make reset` slot'u, connect topic'lerini ve tabloyu da sıfırlar;
+sonra `make cdc-up` ile yeniden başlat. Connect REST API: `localhost:8083`, Postgres: `localhost:5432` (payments/payments, sadece yerel demo).
+
 ## Ne var?
 
 | Dosya | Konu |
 |---|---|
-| `producer/producer.py` | Sentetik işlem akışı ve Debezium biçimli CDC; ground truth üretir |
+| `producer/producer.py` | Sentetik işlem akışı, Debezium biçimli sentetik CDC (`cdc`) ve Postgres'e yazan cüzdan servisi (`wallet-db`); ground truth üretir |
+| `postgres/init.sql`, `debezium/wallets-connector.json` | Cüzdan tablosu ve Debezium Postgres connector ayarı |
 | `spark/jobs/01_batch_basics.py` | Lazy evaluation, `explain()`, broadcast vs sort-merge join, window function, skew + salting, repartition/coalesce, partition pruning |
 | `spark/jobs/02_stream_silver.py` | Kafka → parse → watermark + `dropDuplicatesWithinWatermark` → stream-static join → Parquet, checkpoint |
 | `spark/jobs/03_stream_velocity.py` | Event-time sliding window, watermark, update vs append mode, Kafka sink |
@@ -86,10 +107,10 @@ make test                  # tek modül: make test TEST=test_cdc
 
 ## Notlar
 
-- **Portlar:** Kafka host'tan `localhost:29092`, Spark UI `4040` (iş çalışırken), Flink UI `8081`.
+- **Portlar:** Kafka host'tan `localhost:29092`, Spark UI `4040` (iş çalışırken), Flink UI `8081`, Postgres `5432` ve Connect `8083` (`cdc` profili).
 - **Veri:** `./data` (silver, delta, checkpoint, ground truth). `make reset` hepsini ve topic'leri sıfırlar.
 - **Flink SQL notu:** `sql-client.sh -f` dosyasında yorumlarda tek tırnak (`'`) ve `;` sonrası aynı satırda yorum kullanma; ifadeler birleşip `only single statement supported` hatası verir.
-- **Kapsam dışı:** Gerçek Debezium + Postgres (CDC burada Debezium zarfını taklit eder), Spark cluster modu, schema registry. Sonraki adım olarak eklenebilir.
+- **Kapsam dışı:** Spark cluster modu, schema registry (Debezium burada şemasız JSON yazar).
 - **Temizlik:** `make down`; imajları/volume'u da silmek için `docker-compose down -v`.
 
 ## Lisans

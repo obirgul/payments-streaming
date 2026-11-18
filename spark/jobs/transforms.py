@@ -64,7 +64,7 @@ ROW = T.StructType([
     T.StructField("status", T.StringType()),
 ])
 CDC_SCHEMA = T.StructType([
-    T.StructField("op", T.StringType()),  # c=create, u=update, d=delete
+    T.StructField("op", T.StringType()),  # r=snapshot read, c=create, u=update, d=delete (Debezium)
     T.StructField("ts_ms", T.LongType()),
     T.StructField("source", T.StructType([T.StructField("lsn", T.LongType())])),
     T.StructField("before", ROW),
@@ -74,7 +74,9 @@ CDC_COLS = ["wallet_id", "user_id", "balance_kurus", "status", "lsn", "ts_ms"]
 
 
 def parse_cdc(raw):
-    """Frame with a `value` column (Debezium-style JSON) -> flat columns (op, lsn, ts_ms + wallet columns)."""
+    """Frame with a `value` column (Debezium JSON envelope) -> flat columns (op, lsn, ts_ms + wallet columns).
+    Records without a wallet key (tombstones = null value, unparseable JSON) are dropped.
+    Extra Debezium fields (source.txId, snapshot, updated_at ...) are ignored by the schema."""
     return (raw
             .select(F.from_json(F.col("value").cast("string"), CDC_SCHEMA).alias("c"))
             .select("c.*")
@@ -87,7 +89,8 @@ def parse_cdc(raw):
                 F.col("after.user_id").alias("user_id"),
                 F.col("after.balance_kurus").alias("balance_kurus"),
                 F.col("after.status").alias("status"),
-            ))
+            )
+            .where(F.col("wallet_id").isNotNull()))
 
 
 def latest_per_wallet(batch_df):

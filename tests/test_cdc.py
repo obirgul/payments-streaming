@@ -39,6 +39,37 @@ class CdcParseTest(SparkTestCase):
         self.assertEqual(got, {"W1": 900, "W2": 200})
 
 
+class DebeziumEnvelopeTest(SparkTestCase):
+    """Shape of real Debezium Postgres events (JsonConverter, schemas.enable=false), not the producer's synthetic ones."""
+
+    def debezium(self, op, lsn, before, after):
+        return {"before": before, "after": after, "op": op, "ts_ms": 1767261600123, "transaction": None,
+                "source": {"version": "2.7.3.Final", "connector": "postgresql", "name": "payments", "ts_ms": 1767261600100,
+                           "snapshot": "false", "db": "payments", "schema": "public", "table": "wallets",
+                           "txId": 745, "lsn": lsn, "xmin": None}}
+
+    def full(self, wid, bal):
+        r = row(wid, bal)
+        r["updated_at"] = "2026-01-01T10:00:00.123456Z"  # extra column the schema does not know
+        return r
+
+    def test_snapshot_read_event_is_inserted(self):
+        rows = parse_cdc(self.json_df([self.debezium("r", 23456789, None, self.full("W1", 100000))])).collect()
+        self.assertEqual((rows[0]["op"], rows[0]["wallet_id"], rows[0]["balance_kurus"]), ("r", "W1", 100000))
+
+    def test_large_postgres_lsn_fits(self):
+        big = 2 ** 40 + 12345
+        rows = parse_cdc(self.json_df([self.debezium("u", big, self.full("W1", 1), self.full("W1", 2))])).collect()
+        self.assertEqual(rows[0]["lsn"], big)
+
+    def test_tombstone_and_garbage_are_dropped(self):
+        rows = parse_cdc(self.json_df([
+            "null", "", "{broken",
+            self.debezium("d", 5, self.full("W1", 1), None),
+        ])).collect()
+        self.assertEqual([(r["op"], r["wallet_id"]) for r in rows], [("d", "W1")])
+
+
 class CdcMergeTest(SparkTestCase):
     def setUp(self):
         self.path = tempfile.mkdtemp(prefix="wallets_delta_")
@@ -60,6 +91,11 @@ class CdcMergeTest(SparkTestCase):
                    event("u", 2, after=row("W1", 120)),
                    event("u", 3, after=row("W1", 130)))
         self.assertEqual(self.state(), {"W1": 130})
+
+    def test_snapshot_read_then_updates(self):
+        self.apply(event("r", 10, after=row("W1", 100)), event("r", 10, after=row("W2", 200)))
+        self.apply(event("u", 11, before=row("W1", 100), after=row("W1", 90)))
+        self.assertEqual(self.state(), {"W1": 90, "W2": 200})
 
     def test_delete(self):
         self.apply(event("c", 1, after=row("W1", 100)), event("c", 2, after=row("W2", 200)))
