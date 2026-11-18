@@ -91,3 +91,7 @@ make test                  # tek modül: make test TEST=test_cdc
 - **Flink SQL notu:** `sql-client.sh -f` dosyasında yorumlarda tek tırnak (`'`) ve `;` sonrası aynı satırda yorum kullanma; ifadeler birleşip `only single statement supported` hatası verir.
 - **Kapsam dışı:** Gerçek Debezium + Postgres (CDC burada Debezium zarfını taklit eder), Spark cluster modu, schema registry. Sonraki adım olarak eklenebilir.
 - **Temizlik:** `make down`; imajları/volume'u da silmek için `docker-compose down -v`.
+
+## Lisans
+
+MIT, bkz. [LICENSE](LICENSE).
